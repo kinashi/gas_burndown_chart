@@ -66,7 +66,8 @@ const getPoint = (data: ReturnType<typeof fetchData>) =>
   data.reduce(
     (result, { properties }) => {
       const point = properties['Story Point'].number ?? 0
-      const completed = properties.Status.select?.name === 'Completed' ? point : 0
+      const status = properties.Status.select?.name
+      const completed = status === 'Completed' || status === 'QA' ? point : 0
 
       return {
         all: result.all + point,
@@ -134,8 +135,7 @@ const setActualValue = () => {
 
 const showPoint = () => {
   const ui = SpreadsheetApp.getUi()
-  const sprintName = PropertiesService.getScriptProperties().getProperty('CURRENT_SPRINT_NAME')
-  if (!sprintName) return
+  const sprintName = getActiveSheetName()
 
   const data = fetchData(sprintName)
   const point = getPoint(data)
