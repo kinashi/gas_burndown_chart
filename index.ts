@@ -23,7 +23,6 @@ type Data = {
   results: Result[]
 }
 
-const SPRINT_NAME_RANGE = 'B3'
 const HOLIDAY_COLUMN = 'D'
 const IDEAL_COLUMN = 'E'
 const ACTUAL_COLUMN = 'F'
@@ -80,9 +79,21 @@ const getPoint = (data: ReturnType<typeof fetchData>) =>
     },
   )
 
+const getActiveSheetName = () => SpreadsheetApp.getActiveSheet().getName()
+
+// 現在のスプリントの場合のみ値を返却する
+const getSprintName = () => {
+  const sprintName = PropertiesService.getScriptProperties().getProperty('CURRENT_SPRINT_NAME')
+  const activeSheetName = getActiveSheetName()
+
+  return sprintName && sprintName === activeSheetName ? sprintName : null
+}
+
 const init = () => {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
-  const sprintName = sheet.getRange(SPRINT_NAME_RANGE).getValue() as string
+  const sprintName = getSprintName()
+  if (!sprintName) return
+
   const data = fetchData(sprintName)
   const { all: allPoint } = getPoint(data)
 
@@ -110,7 +121,9 @@ const init = () => {
 
 const setActualValue = () => {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
-  const sprintName = sheet.getRange(SPRINT_NAME_RANGE).getValue() as string
+  const sprintName = getSprintName()
+  if (!sprintName) return
+
   const data = fetchData(sprintName)
   const { all, completed } = getPoint(data)
 
@@ -121,8 +134,9 @@ const setActualValue = () => {
 
 const showPoint = () => {
   const ui = SpreadsheetApp.getUi()
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
-  const sprintName = sheet.getRange(SPRINT_NAME_RANGE).getValue() as string
+  const sprintName = PropertiesService.getScriptProperties().getProperty('CURRENT_SPRINT_NAME')
+  if (!sprintName) return
+
   const data = fetchData(sprintName)
   const point = getPoint(data)
 
