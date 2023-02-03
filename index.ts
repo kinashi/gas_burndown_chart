@@ -23,23 +23,32 @@ type Data = {
   results: Result[]
 }
 
+const TYPE_RANGE = 'B2'
 const HOLIDAY_COLUMN = 'D'
 const IDEAL_COLUMN = 'E'
 const ACTUAL_COLUMN = 'F'
 const START_ROW = 6
 
-const fetchData = (sprintName: string) => {
+// スプレッドシートで TYPE_RANGE にシート名を出力している
+const getActiveSheetName = () => SpreadsheetApp.getActiveSpreadsheet().getActiveSheet().getName()
+
+const getActiveSheetType = (sheetName: string) => {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName)
+  if (!sheet) return
+
+  const value = sheet.getRange(TYPE_RANGE).getValue()
+
+  return value === 'スプリント' ? 'sprint' : value === 'エピック' ? 'epic' : undefined
+}
+
+const fetchData = (option?: { filter: object }) => {
   const token = PropertiesService.getScriptProperties().getProperty('TOKEN')
   const databaseId = PropertiesService.getScriptProperties().getProperty('DATABASE_ID')
-
-  const payload = JSON.stringify({
-    filter: {
-      property: 'Sprint',
-      select: {
-        equals: sprintName,
-      },
-    },
-  })
+  const payload = option?.filter
+    ? JSON.stringify({
+        filter: option.filter,
+      })
+    : undefined
 
   const options = {
     headers: {
@@ -80,26 +89,77 @@ const getPoint = (data: ReturnType<typeof fetchData>) =>
     },
   )
 
-const getActiveSheetName = () => SpreadsheetApp.getActiveSheet().getName()
+const genFetchOption = ({
+  type,
+  targetName,
+}: {
+  type: 'sprint' | 'epic'
+  targetName: string // スプリント名 or エピック名
+}) => {
+  switch (type) {
+    case 'sprint': {
+      return {
+        filter: {
+          property: 'Sprint',
+          select: {
+            equals: targetName,
+          },
+        },
+      }
+    }
+    case 'epic': {
+      return {
+        filter: {
+          property: 'Project',
+          multi_select: {
+            contains: targetName,
+          },
+        },
+      }
+    }
+  }
+}
 
-// 現在のスプリントの場合のみ値を返却する
-const getSprintName = () => {
-  const sprintName = PropertiesService.getScriptProperties().getProperty('CURRENT_SPRINT_NAME')
-  const activeSheetName = getActiveSheetName()
+// 現在のスプリント、エピックの場合のみ値を返却する
+const isCurrent = ({
+  sheetName,
+}: {
+  sheetName?: string // スプリント名 or エピック名
+}) => {
+  if (!sheetName) return false
 
-  return sprintName && sprintName === activeSheetName ? sprintName : null
+  const currentSprintName = PropertiesService.getScriptProperties().getProperty('CURRENT_SPRINT_NAME')
+  const currentEpicNames = PropertiesService.getScriptProperties().getProperty('CURRENT_EPIC_NAMES')?.split(',') ?? []
+
+  return [currentSprintName, ...currentEpicNames].includes(sheetName)
+}
+
+const showNoTargetError = () => {
+  const ui = SpreadsheetApp.getUi()
+  ui.alert('対象のスプリント、またはエピックではありません')
 }
 
 const init = () => {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
-  const sprintName = getSprintName()
-  if (!sprintName) return
 
-  const data = fetchData(sprintName)
-  const { all: allPoint } = getPoint(data)
+  if (!isCurrent({ sheetName: sheet.getName() })) {
+    showNoTargetError()
+    return
+  }
+
+  const type = getActiveSheetType(sheet.getName())
+  if (!type) {
+    showNoTargetError()
+    return
+  }
+
+  const option = genFetchOption({ type, targetName: sheet.getName() })
+  const data = fetchData(option)
+  const { all: allPoint, completed: completedPoint } = getPoint(data)
+  const initPoint = allPoint - completedPoint
 
   // スプリント初めのSPを入力
-  sheet.getRange(`${IDEAL_COLUMN}${START_ROW}:${ACTUAL_COLUMN}${START_ROW}`).setValues([[allPoint, allPoint]])
+  sheet.getRange(`${IDEAL_COLUMN}${START_ROW}:${ACTUAL_COLUMN}${START_ROW}`).setValues([[initPoint, initPoint]])
 
   const lastRow = sheet.getLastRow()
   const holidaysCont = sheet
@@ -114,40 +174,66 @@ const init = () => {
     const dayBeforeValue = sheet.getRange(`${IDEAL_COLUMN}${row - 1}`).getValue()
 
     // 休日の次の日は理想線のポイントを据え置き
-    const value = isHoliday ? dayBeforeValue : dayBeforeValue - allPoint / workDaysCount
+    const value = isHoliday ? dayBeforeValue : dayBeforeValue - initPoint / workDaysCount
 
     sheet.getRange(`${IDEAL_COLUMN}${row}`).setValue(value)
   }
 }
 
-const setActualValue = () => {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
-  const sprintName = getSprintName()
-  if (!sprintName) return
+const setActualValue = (sheet: ReturnType<typeof SpreadsheetApp.getActiveSheet>, isManual = false) => {
+  if (!isCurrent({ sheetName: sheet.getName() })) {
+    if (isManual) showNoTargetError()
+    return
+  }
 
-  const data = fetchData(sprintName)
+  const type = getActiveSheetType(sheet.getName())
+  if (!type) {
+    if (isManual) showNoTargetError()
+    return
+  }
+
+  const option = genFetchOption({ type, targetName: sheet.getName() })
+  const data = fetchData(option)
   const { all, completed } = getPoint(data)
 
   const lastRow =
-    START_ROW + sheet.getRange(`${ACTUAL_COLUMN}${START_ROW}:${ACTUAL_COLUMN}20`).getValues().filter(String).length
+    START_ROW + sheet.getRange(`${ACTUAL_COLUMN}${START_ROW}:${ACTUAL_COLUMN}50`).getValues().filter(String).length
   sheet.getRange(`${ACTUAL_COLUMN}${lastRow}`).setValue(all - completed)
 }
 
-const showPoint = () => {
-  const ui = SpreadsheetApp.getUi()
-  const sprintName = getActiveSheetName()
+const setAllActualValues = (isManual = false) => {
+  const sheets = SpreadsheetApp.getActiveSpreadsheet().getSheets()
 
-  const data = fetchData(sprintName)
+  sheets.forEach((sheet) => {
+    setActualValue(sheet)
+  })
+}
+
+const showPoint = () => {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
+  const type = getActiveSheetType(sheet.getName())
+  if (!type) {
+    showNoTargetError()
+    return
+  }
+
+  const option = genFetchOption({ type, targetName: sheet.getName() })
+  const data = fetchData(option)
   const point = getPoint(data)
 
-  ui.alert(JSON.stringify(point))
+  SpreadsheetApp.getUi().alert(JSON.stringify(point))
+}
+
+const setActualValueManually = () => {
+  const activeSheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet()
+
+  setActualValue(activeSheet, true)
 }
 
 const onOpen = () => {
   SpreadsheetApp.getActiveSpreadsheet().addMenu('バーンダウン設定', [
     { name: '初期値入力', functionName: 'init' },
-    // 手動でも実行できるようにしておく
-    { name: '現在の実績を入力', functionName: 'setActualValue' },
+    { name: '現在の実績を入力', functionName: 'setActualValueManually' },
     { name: 'ポイントを確認', functionName: 'showPoint' },
   ])
 }
