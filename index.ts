@@ -21,6 +21,8 @@ type Result = {
 
 type Data = {
   results: Result[]
+  has_more: boolean
+  next_cursor: string | null
 }
 
 const TYPE_RANGE = 'B2'
@@ -44,11 +46,7 @@ const getActiveSheetType = (sheetName: string) => {
 const fetchData = (option?: { filter: object }) => {
   const token = PropertiesService.getScriptProperties().getProperty('TOKEN')
   const databaseId = PropertiesService.getScriptProperties().getProperty('DATABASE_ID')
-  const payload = option?.filter
-    ? JSON.stringify({
-        filter: option.filter,
-      })
-    : undefined
+  const url = `https://api.notion.com/v1/databases/${databaseId}/query`
 
   const options = {
     headers: {
@@ -57,16 +55,27 @@ const fetchData = (option?: { filter: object }) => {
     },
     contentType: 'application/json',
     method: 'post' as const,
-    payload,
   }
 
-  const data = JSON.parse(
-    UrlFetchApp.fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, options).getContentText(),
-  ) as Data
+  let results: Data['results'] = []
+  let nextCursor: Data['next_cursor'] = null
+  do {
+    const data = JSON.parse(
+      UrlFetchApp.fetch(url, {
+        ...options,
+        payload: JSON.stringify({
+          filter: option?.filter,
+          start_cursor: nextCursor ?? undefined,
+        }),
+      }).getContentText(),
+    ) as Data
+    results = [...results, ...data.results]
+    nextCursor = data.next_cursor
+  } while (nextCursor)
 
   const members = PropertiesService.getScriptProperties().getProperty('MEMBERS')?.split(',') ?? []
 
-  return data.results.filter((result) =>
+  return results.filter((result) =>
     result.properties.Assign.people?.some((people) => members.includes(people.person.email)),
   )
 }
@@ -155,8 +164,8 @@ const init = () => {
 
   const option = genFetchOption({ type, targetName: sheet.getName() })
   const data = fetchData(option)
-  const { all: allPoint, completed: completedPoint } = getPoint(data)
-  const initPoint = allPoint - completedPoint
+  const { all: allPoint } = getPoint(data)
+  const initPoint = allPoint
 
   // スプリント初めのSPを入力
   sheet.getRange(`${IDEAL_COLUMN}${START_ROW}:${ACTUAL_COLUMN}${START_ROW}`).setValues([[initPoint, initPoint]])
